@@ -1,11 +1,10 @@
-import PIL
 import numpy as np
 import tensorflow as tf
-import tensorflow.keras.layers as L
-from keras.layers import LeakyReLU
-from matplotlib import pyplot as plt
-
+from keras import layers as L
+from sklearn.model_selection import train_test_split
+import cv2 as cv
 from data import Data
+
 
 
 class Model:
@@ -18,7 +17,6 @@ class Model:
         self.age_model = None
         self.gender_model = None
         self.ethnicity_model = None
-        self.build_model()
 
     def build_model(self):
         print("+++++++++++++++++++++++++building age model+++++++++++++++++++++++++++++")
@@ -27,16 +25,44 @@ class Model:
         self.gender_model = self.get_gender_model()
         print("+++++++++++++++++++++++++building ethnicity model+++++++++++++++++++++++++++++")
         self.ethnicity_model = self.get_ethnicity_model()
+        self.train()
+
+    ## Stop training when validation loss reach 110
+    class ageCallback(tf.keras.callbacks.Callback):
+        def on_epoch_end(self, epoch, logs={}):
+            if (logs.get('val_loss') < 110):
+                print("\nReached 110 val_loss so cancelling training!")
+                self.model.stop_training = True
+
+    ## Stop training when validation accuracy reach 79%
+    class ethnicityCallback(tf.keras.callbacks.Callback):
+        def on_epoch_end(self, epoch, logs={}):
+            if (logs.get('val_accuracy') > 0.790):
+                print("\nReached 79% val_accuracy so cancelling training!")
+                self.model.stop_training = True
+
+    ## Stop training when validation loss reach 0.2700
+    class genderCallback(tf.keras.callbacks.Callback):
+        def on_epoch_end(self, epoch, logs={}):
+            if (logs.get('val_loss') < 0.2700):
+                print("\nReached 0.2700 val_loss so cancelling training!")
+                self.model.stop_training = True
 
     def get_age_model(self):
         model = tf.keras.Sequential([
             L.InputLayer(input_shape=(48, 48, 1)),
-            L.Dense(512, activition=LeakyReLU(alpha=0.3)),
+            L.Conv2D(32, (3, 3), activation='relu', input_shape=(32, 32, 3)),
             L.BatchNormalization(),
-            L.Dropout(rate=0.2),
-            L.Dense(1, activation=None)
+            L.MaxPooling2D((2, 2)),
+            L.Conv2D(64, (3, 3), activation='relu'),
+            L.MaxPooling2D((2, 2)),
+            L.Conv2D(128, (3, 3), activation='relu'),
+            L.MaxPooling2D((2, 2)),
+            L.Flatten(),
+            L.Dense(64, activation='relu'),
+            L.Dropout(rate=0.5),
+            L.Dense(1, activation='relu')
         ])
-        self.compile_and_fit(model, self.data.ages)
         return model
 
     def get_gender_model(self):
@@ -49,66 +75,64 @@ class Model:
             L.MaxPooling2D((2, 2)),
             L.Flatten(),
             L.Dense(64, activation='relu'),
-            L.Dropout(rate=0.2),
+            L.Dropout(rate=0.5),
             L.Dense(1, activation='sigmoid')
         ])
-        self.compile_and_fit(model, self.data.genders)
+
         return model
 
     def get_ethnicity_model(self):
         model = tf.keras.Sequential([
             L.InputLayer(input_shape=(48, 48, 1)),
             L.Conv2D(32, (3, 3), activation='relu', input_shape=(32, 32, 3)),
-            L.BatchNormalization(),
             L.MaxPooling2D((2, 2)),
             L.Conv2D(64, (3, 3), activation='relu'),
             L.MaxPooling2D((2, 2)),
             L.Flatten(),
             L.Dense(64, activation='relu'),
-            L.Dropout(rate=0.2),
-            L.Dense(1, activation='softmax')
+            L.Dropout(rate=0.5),
+            L.Dense(5)
         ])
-        self.compile_and_fit(model, self.data.ethnicities)
         return model
 
-    def compile_and_fit(self, model, y, max_epochs=2000):
-        X_train, X_test, y_train, y_test = self.data.get_data(y, test_size=0.22)
-        model.compile(optimizer='sgd',
-                      loss='mean_squared_error',
-                      metrics=[
-                          'mae',
-                          'accuracy'])
-        model.summary()
-        history = model.fit(
-            X_train,
-            y_train,
-            epochs=max_epochs,
-            callbacks=[self.myCallback()],
-            verbose=0)
+    def train(self):
+        self.ethnicity_model.compile(optimizer='rmsprop',
+                      loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                      metrics=['accuracy'])
+        self.compile_and_fit(self.ethnicity_model, self.data.ethnicities, self.ethnicityCallback(), "ethnicity")
 
-        self.eval(model, X_test, y_test)
+        self.gender_model.compile(optimizer='sgd',
+                      loss=tf.keras.losses.BinaryCrossentropy(),
+                      metrics=['accuracy'])
+        self.compile_and_fit(self.gender_model, self.data.genders, self.genderCallback(), "gender")
+
+        sgd = tf.keras.optimizers.SGD(momentum=0.9)
+        self.age_model.compile(optimizer='adam',
+                      loss='mean_squared_error',
+                      metrics=['mae'])
+        self.compile_and_fit(self.age_model, self.data.ages, self.ageCallback(), "age")
+
+    def compile_and_fit(self, model, y, callback, name, max_epochs=2000):
+        X_train, X_test, y_train, y_test = train_test_split(self.data.images, y, test_size=0.22, random_state=37)
+        model.summary()
+        checkpoint_path = "drive/MyDrive/Colab Notebooks/{}/cp.ckpt".format(name)
+        cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                         save_weights_only=True,
+                                                         verbose=1)
+        history = model.fit(X_train, y_train, epochs=100, validation_split=0.1, batch_size=64,
+                            callbacks=[callback, cp_callback])
+        eval(model, X_test, y_test)
         return history
 
-    def eval(self, model, X_test, y_test):
-        mse, mae = model.evaluate(X_test, y_test, verbose=0)
-        print('Test Mean squared error: {}'.format(mse))
-        print('Test Mean absolute error: {}'.format(mae))
-
-    def predict(self, image_path):
-        imported_image = PIL.Image.open(image_path).resize((48, 48)).convert('L')
+    def predict(self, image):
+        imported_image = cv.resize(image, (48, 48))
         image_pixels = np.expand_dims(np.asarray(imported_image), axis=0)
+        image_pixels = image_pixels / 255
         age = self.age_model.predict(image_pixels)
         gender = self.gender_model.predict(image_pixels)
         ethnicity = self.ethnicity_model.predict(image_pixels)
-        print('age: {}, gender: {}, ethnicity: {}'.format(age, gender, ethnicity))
-        plt.title(
-            f'Prediction: {age[0][0].argmax()} years, {self.gender_classifications[gender[0][0].argmax()]}, {self.ethnicity_classifications[ethnicity[0][0].argmax()]}\n')
-        plt.imshow(image_pixels)
-        plt.show()
-
-    class myCallback(tf.keras.callbacks.Callback):
-        def on_epoch_end(self, epoch, logs={}):
-            if (logs.get('val_loss') < 110):
-                print("\nReached 110 val_loss so cancelling training!")
-                self.model.stop_training = True
-
+        return f'Prediction: {age[0][0]} years old, {self.gender_classifications[int(gender[0][0])]}, {self.ethnicity_classifications[ethnicity[0].argmax()]}'
+        # plt.title(
+        #     f'Prediction: {age[0][0].argmax()} years, {self.gender_classifications[gender[0][0].argmax()]}, {self.ethnicity_classifications[ethnicity[0][0].argmax()]}\n')
+        # plt.imshow(image_pixels)
+        # plt.show()
