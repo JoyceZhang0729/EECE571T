@@ -7,6 +7,7 @@ names = ["age", "gender", "ethnicity"]
 classifier = cv.CascadeClassifier('pretrained_model/haarcascade_frontalface_default.xml')
 
 
+
 def captureImage():
     cap = cv.VideoCapture(0)
     if not cap.isOpened():
